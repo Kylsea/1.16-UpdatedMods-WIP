@@ -1,0 +1,316 @@
+/*******************************************************************************
+ * @author Reika Kalseki
+ *
+ * Copyright 2017
+ *
+ * All rights reserved.
+ * Distribution of the software in any form is only allowed with
+ * explicit, prior permission from the owner.
+ ******************************************************************************/
+package Reika.RotaryCraft.TileEntities.Processing;
+
+import net.minecraft.init.Blocks;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.crafting.FurnaceRecipes;
+import net.minecraft.nbt.NBTTagCompound;
+import net.minecraft.world.World;
+import net.minecraftforge.common.util.ForgeDirection;
+import net.minecraftforge.fluids.Fluid;
+import net.minecraftforge.fluids.FluidRegistry;
+
+import Reika.DragonAPI.Instantiable.StepTimer;
+import Reika.DragonAPI.Interfaces.TileEntity.XPProducer;
+import Reika.DragonAPI.Libraries.ReikaInventoryHelper;
+import Reika.DragonAPI.Libraries.Registry.ReikaItemHelper;
+import Reika.DragonAPI.Libraries.World.ReikaWorldHelper;
+import Reika.RotaryCraft.Auxiliary.Interfaces.ProcessingMachine;
+import Reika.RotaryCraft.Auxiliary.Interfaces.TemperatureTE;
+import Reika.RotaryCraft.Base.TileEntity.InventoriedPowerLiquidReceiver;
+import Reika.RotaryCraft.Registry.MachineRegistry;
+
+public class TileEntityBigFurnace extends InventoriedPowerLiquidReceiver implements TemperatureTE, XPProducer, ProcessingMachine {
+
+	public static final int HEIGHT = 2;
+	public static final int WIDTH = 9;
+
+	public static final int MAXTEMP = 1200;
+
+	public static final int SMELT_TEMP = 400;
+
+	private float xp;
+
+	private int temperature;
+
+	public int smeltTick;
+	private StepTimer smelter = new StepTimer(200);
+	private StepTimer tempTimer = new StepTimer(20);
+
+	@Override
+	public void updateEntity(World world, int x, int y, int z, int meta) {
+		super.updateTileEntity();
+		this.getPowerBelow();
+		tempTimer.update();
+		if (tempTimer.checkCap())
+			this.updateTemperature(world, x, y, z, meta);
+
+		smelter.setCap(this.getOperationTime());
+
+		if (!worldObj.isRemote) {
+			if (this.canSmelt()) {
+				smelter.update();
+				if (smelter.checkCap())
+					if (!worldObj.isRemote)
+						this.smelt();
+			}
+			else
+				smelter.reset();
+		}
+		smeltTick = smelter.getTick();
+	}
+
+	public int getNumberInputSlots() {
+		return WIDTH * HEIGHT;
+	}
+
+	private void smelt() {
+		int n = this.getNumberInputSlots();
+		for (int i = 0; i < n; i++) {
+			ItemStack is = inv[i];
+			if (is != null) {
+				ItemStack to = FurnaceRecipes.smelting().getSmeltingResult(is);
+				if (to != null) {
+					boolean add = false;
+					if (inv[i+n] == null) {
+						inv[i+n] = to.copy();
+						add = true;
+					}
+					else {
+						if (ReikaItemHelper.areStacksCombinable(to, inv[i+n], this.getInventoryStackLimit())) {
+							add = true;
+							inv[i+n].stackSize += to.stackSize;
+						}
+					}
+					if (add)
+						ReikaInventoryHelper.decrStack(i, inv);
+				}
+			}
+		}
+	}
+
+	private boolean canSmelt() {
+		if (temperature < SMELT_TEMP)
+			return false;
+		if (power < MINPOWER)
+			return false;
+		int n = this.getNumberInputSlots();
+		for (int i = 0; i < n; i++) {
+			ItemStack is = inv[i];
+			if (is != null) {
+				ItemStack to = FurnaceRecipes.smelting().getSmeltingResult(is);
+				if (to != null) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	@Override
+	public boolean canExtractItem(int i, ItemStack itemstack, int j) {
+		return i >= this.getNumberInputSlots();
+	}
+
+	@Override
+	public int getSizeInventory() {
+		return WIDTH * HEIGHT * 2;
+	}
+
+	@Override
+	public void updateTemperature(World world, int x, int y, int z, int meta) {
+		int Tamb = ReikaWorldHelper.getAmbientTemperatureAt(world, x, y, z);
+
+		if (!tank.isEmpty()) {
+			tank.removeLiquid(15);
+			Fluid f = tank.getActualFluid();
+			if (f.equals(FluidRegistry.LAVA))
+				Tamb += 600;
+			else if (f.equals(FluidRegistry.getFluid("pyrotheum")))
+				Tamb += 1000;
+		}
+
+		if (temperature > Tamb)
+			temperature--;
+		if (temperature > Tamb*2)
+			temperature--;
+		if (temperature < Tamb)
+			temperature++;
+		if (temperature*2 < Tamb)
+			temperature++;
+		if (temperature > MAXTEMP) {
+			temperature = MAXTEMP;
+			this.overheat(world, x, y, z);
+		}
+		if (temperature > 100) {
+			ForgeDirection side = ReikaWorldHelper.checkForAdjBlock(world, x, y, z, Blocks.snow);
+			if (side != null)
+				ReikaWorldHelper.changeAdjBlock(world, x, y, z, side, Blocks.air, 0);
+			side = ReikaWorldHelper.checkForAdjBlock(world, x, y, z, Blocks.ice);
+			if (side != null)
+				ReikaWorldHelper.changeAdjBlock(world, x, y, z, side, Blocks.flowing_water, 0);
+		}
+	}
+
+	@Override
+	public void addTemperature(int temp) {
+		temperature += temp;
+	}
+
+	@Override
+	public int getTemperature() {
+		return temperature;
+	}
+
+	@Override
+	public int getThermalDamage() {
+		return temperature/200;
+	}
+
+	@Override
+	public void overheat(World world, int x, int y, int z) {
+
+	}
+
+	@Override
+	public boolean isItemValidForSlot(int slot, ItemStack is) {
+		return slot < this.getNumberInputSlots();
+	}
+
+	@Override
+	protected void animateWithTick(World world, int x, int y, int z) {
+
+	}
+
+	@Override
+	public MachineRegistry getTile() {
+		return MachineRegistry.BIGFURNACE;
+	}
+
+	@Override
+	public boolean hasModelTransparency() {
+		return false;
+	}
+
+	@Override
+	public int getRedstoneOverride() {
+		return 0;
+	}
+
+	@Override
+	public boolean canConnectToPipe(MachineRegistry m) {
+		return m.isStandardPipe();
+	}
+
+	@Override
+	public Fluid getInputFluid() {
+		return null;
+	}
+
+	@Override
+	public boolean isValidFluid(Fluid f) {
+		if (f == null)
+			return false;
+		return f == FluidRegistry.LAVA || f == FluidRegistry.getFluid("pyrotheum");
+	}
+
+	@Override
+	public boolean canReceiveFrom(ForgeDirection from) {
+		return from.offsetY == 0;
+	}
+
+	@Override
+	public int getCapacity() {
+		return 16000;
+	}
+
+	@Override
+	public void clearXP() {
+		xp = 0;
+	}
+
+	@Override
+	public float getXP() {
+		return xp;
+	}
+
+	public int getCookScaled(int i) {
+		return smeltTick * i / smelter.getCap();
+	}
+
+	public int getLavaScaled(int i) {
+		return tank.getLevel() * i / tank.getCapacity();
+	}
+
+	@Override
+	protected void readSyncTag(NBTTagCompound NBT) {
+		super.readSyncTag(NBT);
+
+		temperature = NBT.getInteger("temp");
+		xp = NBT.getFloat("xp");
+	}
+
+	@Override
+	protected void writeSyncTag(NBTTagCompound NBT) {
+		super.writeSyncTag(NBT);
+
+		NBT.setInteger("temp", temperature);
+		NBT.setFloat("xp", xp);
+	}
+
+	@Override
+	public int getOperationTime() {
+		int base = temperature >= 600 ? 150 : 200;
+		return temperature >= 1000 ? base/2 : base;
+	}
+
+	@Override
+	public boolean areConditionsMet() {
+		return this.canSmelt();
+	}
+
+	@Override
+	public String getOperationalStatus() {
+		if (temperature < SMELT_TEMP)
+			return "Insufficient Temperature";
+		return this.areConditionsMet() ? "Operational" : "No Smeltable Items";
+	}
+
+	@Override
+	public boolean canBeCooledWithFins() {
+		return false;
+	}
+
+	@Override
+	public boolean allowHeatExtraction() {
+		return false;
+	}
+
+	@Override
+	public boolean allowExternalHeating() {
+		return false;
+	}
+
+	public void setTemperature(int temp) {
+		temperature = temp;
+	}
+
+	@Override
+	public int getMaxTemperature() {
+		return MAXTEMP;
+	}
+
+	@Override
+	public boolean hasWork() {
+		return this.areConditionsMet();
+	}
+
+}
